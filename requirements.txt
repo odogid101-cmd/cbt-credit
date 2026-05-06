@@ -1,5 +1,5 @@
 flask
-Flask-Cors
+flask-cors
 psycopg2-binary
-python-dotenv
+werkzeug
 gunicorn
