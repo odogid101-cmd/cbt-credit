@@ -72,6 +72,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+    conn.commit()
 
     cur.execute("""
     DO $$
@@ -84,6 +85,7 @@ def init_db():
         END IF;
     END $$;
     """)
+    conn.commit()
 
     # 4. TOPICS
     cur.execute("""
@@ -96,6 +98,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+    conn.commit()
 
     # 5. QUESTIONS
     cur.execute("""
@@ -115,6 +118,7 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+    conn.commit()
 
     # 6. RESULTS
     cur.execute("""
@@ -126,8 +130,8 @@ def init_db():
             submitted_at TIMESTAMP DEFAULT NOW()
         );
     """)
-
     conn.commit()
+
     cur.close()
     conn.close()
 
@@ -417,3 +421,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
+            
