@@ -39,7 +39,7 @@ def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
 
-    # USERS - email, username, password all unique
+    # 1. USERS - create table first before checking for admin
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id SERIAL PRIMARY KEY,
@@ -51,8 +51,9 @@ def init_db():
             created_at TIMESTAMP DEFAULT NOW()
         );
     """)
+    conn.commit()
 
-    # Create default admin if none exists
+    # 2. Create default admin if none exists
     cur.execute("SELECT user_id FROM users WHERE role = 'admin' LIMIT 1")
     if not cur.fetchone():
         admin_pass = generate_password_hash('@9064_tech')
@@ -60,8 +61,9 @@ def init_db():
             INSERT INTO users (full_name, username, email, password, role) 
             VALUES (%s, %s, %s, %s, %s)
         """, ('Admin', 'admin', 'admin@example.com', admin_pass, 'admin'))
+        conn.commit()
 
-    # SUBJECTS
+    # 3. SUBJECTS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS subjects (
             subject_id SERIAL PRIMARY KEY,
@@ -83,7 +85,7 @@ def init_db():
     END $$;
     """)
 
-    # TOPICS
+    # 4. TOPICS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS topics (
             topic_id SERIAL PRIMARY KEY,
@@ -95,7 +97,7 @@ def init_db():
         );
     """)
 
-    # QUESTIONS
+    # 5. QUESTIONS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS questions (
             question_id SERIAL PRIMARY KEY,
@@ -114,7 +116,7 @@ def init_db():
         );
     """)
 
-    # RESULTS
+    # 6. RESULTS
     cur.execute("""
         CREATE TABLE IF NOT EXISTS results (
             result_id SERIAL PRIMARY KEY,
@@ -212,7 +214,7 @@ def add_subject():
         conn.close()
         return jsonify({"message": "Subject added", "subject": subject}), 201
     except IntegrityError:
-        return jsonify({"error": "Subject already exists"}), 400
+        return jsonify({"error": "Subject already exists for this exam type"}), 400
 
 @app.route("/admin/subjects", methods=["GET"])
 def get_subjects():
@@ -336,9 +338,11 @@ def submit_exam():
     conn = get_db_connection()
     cur = conn.cursor()
     q_ids = list(answers.keys())
+    if not q_ids:
+        return jsonify({"error": "No answers provided"}), 400
     cur.execute(f"SELECT question_id, answer FROM questions WHERE question_id IN ({','.join(['%s']*len(q_ids))})", q_ids)
-    correct_answers = {str(row['question_id']): row['answer'] for row in cur.fetchall()}
-    score = sum(1 for qid, ans in answers.items() if correct_answers.get(qid) == ans.upper())
+    correct_answers = {str(row['question_id']): str(row['answer']) for row in cur.fetchall()}
+    score = sum(1 for qid, ans in answers.items() if correct_answers.get(str(qid)) == str(ans))
     total = len(correct_answers)
     cur.execute("INSERT INTO results (user_id, score, total_questions) VALUES (%s, %s, %s) RETURNING result_id", 
                 (user_id, score, total))
@@ -375,7 +379,7 @@ def register():
         conn.close()
         return jsonify({"message": "Account created successfully", "user_id": user["user_id"]}), 201
     except IntegrityError as e:
-        err_msg = str(e)
+        err_msg = str(e).lower()
         if "username" in err_msg:
             return jsonify({"error": "Username already exists"}), 400
         elif "email" in err_msg:
@@ -393,7 +397,6 @@ def login():
 
     conn = get_db_connection()
     cur = conn.cursor()
-    # Allow login with either username or email
     cur.execute(
         "SELECT * FROM users WHERE username=%s OR email=%s",
         (login_field, login_field)
