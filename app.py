@@ -1,266 +1,416 @@
 import os
-from flask import Flask, request, jsonify, session
-from flask_cors import CORS
-from psycopg2 import connect
-from psycopg2.extras import RealDictCursor
-from werkzeug.security import generate_password_hash, check_password_hash
 from functools import wraps
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2 import IntegrityError
+from werkzeug.security import generate_password_hash, check_password_hash
 
+# ================= ADMIN CONFIG =================
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD_HASH = generate_password_hash("@9064_tech")
+
+# ================= APP =================
 app = Flask(__name__)
+CORS(app)
 
-# --- IMPORTANT: Session + CORS config for Render ---
-app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-change-this-in-production')
-app.config['SESSION_COOKIE_SAMESITE'] = 'None'  # Allow cross-site cookie
-app.config['SESSION_COOKIE_SECURE'] = True      # Must be True for HTTPS on Render
-app.config['SESSION_COOKIE_HTTPONLY'] = True
-app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL not set")
 
-CORS(app, supports_credentials=True, origins=["*"])  # Replace "*" with your frontend URL in production
+# ================= DB CONNECTION =================
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor, sslmode="require")
 
-DATABASE_URL = os.environ.get('DATABASE_URL')
+# ================= ADMIN GUARD =================
+def admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        data = request.get_json(silent=True) or {}
+        password = data.get("admin_password")
+        if not password or not check_password_hash(ADMIN_PASSWORD_HASH, password):
+            return jsonify({"error": "Admin authorization required"}), 403
+        return f(*args, **kwargs)
+    return wrapper
 
-def get_db():
-    return connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
+# ================= INIT DB =================
 def init_db():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    id SERIAL PRIMARY KEY,
-                    username VARCHAR(100) UNIQUE NOT NULL,
-                    email VARCHAR(200) UNIQUE NOT NULL,
-                    password_hash VARCHAR(300) NOT NULL,
-                    role VARCHAR(20) DEFAULT 'user' NOT NULL CHECK (role IN ('user', 'admin')),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            cur.execute("SELECT id FROM users WHERE role = 'admin' LIMIT 1")
-            if not cur.fetchone():
-                admin_pass = generate_password_hash('admin123')
-                cur.execute("""
-                    INSERT INTO users (username, email, password_hash, role) 
-                    VALUES (%s, %s, %s, %s)
-                """, ('admin', 'admin@example.com', admin_pass, 'admin'))
-                print("Default admin created: admin@example.com / admin123")
-            
-            # CBT tables
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS questions (
-                    id SERIAL PRIMARY KEY,
-                    question_text TEXT NOT NULL,
-                    option_a VARCHAR(255) NOT NULL,
-                    option_b VARCHAR(255) NOT NULL,
-                    option_c VARCHAR(255) NOT NULL,
-                    option_d VARCHAR(255) NOT NULL,
-                    correct_answer CHAR(1) NOT NULL CHECK (correct_answer IN ('A','B','C','D')),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS results (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                    score INTEGER NOT NULL,
-                    total_questions INTEGER NOT NULL,
-                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit()
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    # USERS - email, username, password all unique
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id SERIAL PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            username TEXT UNIQUE NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    # Create default admin if none exists
+    cur.execute("SELECT user_id FROM users WHERE role = 'admin' LIMIT 1")
+    if not cur.fetchone():
+        admin_pass = generate_password_hash('@9064_tech')
+        cur.execute("""
+            INSERT INTO users (full_name, username, email, password, role) 
+            VALUES (%s, %s, %s, %s, %s)
+        """, ('Admin', 'admin', 'admin@example.com', admin_pass, 'admin'))
+
+    # SUBJECTS
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS subjects (
+            subject_id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            exam_type TEXT NOT NULL DEFAULT 'JAMB',
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    cur.execute("""
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints
+            WHERE table_name='subjects' AND constraint_name='unique_subject_per_exam_type'
+        ) THEN
+            ALTER TABLE subjects ADD CONSTRAINT unique_subject_per_exam_type UNIQUE(name, exam_type);
+        END IF;
+    END $$;
+    """)
+
+    # TOPICS
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS topics (
+            topic_id SERIAL PRIMARY KEY,
+            subject_id INT REFERENCES subjects(subject_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            explanation TEXT,
+            jamb_percentage INT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    # QUESTIONS
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS questions (
+            question_id SERIAL PRIMARY KEY,
+            subject_id INT REFERENCES subjects(subject_id) ON DELETE CASCADE,
+            topic_id INT REFERENCES topics(topic_id) ON DELETE CASCADE,
+            exam_type TEXT NOT NULL,
+            question TEXT NOT NULL,
+            option_a TEXT NOT NULL,
+            option_b TEXT NOT NULL,
+            option_c TEXT NOT NULL,
+            option_d TEXT NOT NULL,
+            option_e TEXT,
+            answer TEXT NOT NULL,
+            explanation TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    # RESULTS
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS results (
+            result_id SERIAL PRIMARY KEY,
+            user_id INT REFERENCES users(user_id) ON DELETE CASCADE,
+            score INT NOT NULL,
+            total_questions INT NOT NULL,
+            submitted_at TIMESTAMP DEFAULT NOW()
+        );
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 init_db()
 
-# Decorators
-def login_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'You must be logged in'}), 401
-        return f(*args, **kwargs)
-    return decorated
+# ================= ADMIN LOGIN =================
+@app.route("/admin/login", methods=["POST"])
+def admin_login():
+    data = request.get_json() or {}
+    if data.get("username") != ADMIN_USERNAME:
+        return jsonify({"error": "Invalid admin credentials"}), 401
+    if not check_password_hash(ADMIN_PASSWORD_HASH, data.get("password", "")):
+        return jsonify({"error": "Invalid admin credentials"}), 401
+    return jsonify({"message": "Admin login successful"}), 200
 
-def admin_required(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'role' not in session or session['role'] != 'admin':
-            return jsonify({'error': 'Admin access required'}), 403
-        return f(*args, **kwargs)
-    return decorated
-
-# ---------- AUTH ROUTES ----------
-@app.route('/register', methods=['POST'])
-def register():
-    data = request.get_json()
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-
-    if not username or not email or not password:
-        return jsonify({'error': 'Username, email, and password are required'}), 400
-    if len(password) < 6:
-        return jsonify({'error': 'Password must be at least 6 characters'}), 400
-
-    password_hash = generate_password_hash(password)
-    try:
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    INSERT INTO users (username, email, password_hash, role) 
-                    VALUES (%s, %s, %s, %s) RETURNING id, username, email, role, created_at
-                """, (username, email, password_hash, 'user'))
-                user = cur.fetchone()
-                conn.commit()
-                return jsonify({'message': 'User registered successfully', 'user': user}), 201
-    except Exception:
-        return jsonify({'error': 'Username or email already exists'}), 409
-
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get('email')
-    password = data.get('password')
-
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-            user = cur.fetchone()
-
-    if user and check_password_hash(user['password_hash'], password):
-        session['user_id'] = user['id']
-        session['role'] = user['role']
-        session['username'] = user['username']
-        session.permanent = True  # Make session last 24h
-        return jsonify({
-            'message': 'Login successful', 
-            'user': {'id': user['id'], 'username': user['username'], 'email': user['email'], 'role': user['role']}
-        }), 200
-    
-    return jsonify({'error': 'Invalid email or password'}), 401
-
-@app.route('/me', methods=['GET'])
-@login_required
-def me():
-    user_id = session.get('user_id')
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, username, email, role, created_at FROM users WHERE id = %s", (user_id,))
-            user = cur.fetchone()
-    return jsonify({'user': user}), 200
-
-@app.route('/logout', methods=['POST'])
-@login_required
-def logout():
-    session.clear()
-    return jsonify({'message': 'Logged out successfully'}), 200
-
-# ---------- ADMIN ROUTES ----------
-@app.route('/admin/users', methods=['GET'])
+# ================= ADMIN USERS =================
+@app.route("/admin/users", methods=["GET"])
 @admin_required
-def admin_get_users():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, username, email, role, created_at FROM users ORDER BY created_at DESC")
-            users = cur.fetchall()
-    return jsonify({'users': users, 'count': len(users)}), 200
+def get_users():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT user_id, full_name, username, email, role, created_at
+        FROM users ORDER BY user_id DESC
+    """)
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(users), 200
 
-@app.route('/admin/users/<int:user_id>', methods=['DELETE'])
+@app.route("/admin/users/<int:user_id>", methods=["DELETE"])
 @admin_required
-def admin_delete_user(user_id):
-    if user_id == session.get('user_id'):
-        return jsonify({'error': 'You cannot delete your own account'}), 400
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM users WHERE id = %s RETURNING id, username", (user_id,))
-            deleted = cur.fetchone()
-            conn.commit()
+def delete_user(user_id):
+    if user_id == 1:
+        return jsonify({"error": "Cannot delete main admin"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM users WHERE user_id=%s RETURNING user_id", (user_id,))
+    deleted = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
     if not deleted:
-        return jsonify({'error': 'User not found'}), 404
-    return jsonify({'message': f"User {deleted['username']} deleted successfully"}), 200
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"message": "User deleted"}), 200
 
-@app.route('/admin/users/<int:user_id>/role', methods=['PUT'])
+@app.route("/admin/users/<int:user_id>/role", methods=["PUT"])
 @admin_required
-def admin_update_role(user_id):
-    data = request.get_json()
-    new_role = data.get('role')
+def update_user_role(user_id):
+    data = request.get_json() or {}
+    new_role = data.get("role")
     if new_role not in ['user', 'admin']:
-        return jsonify({'error': 'Role must be either user or admin'}), 400
-    if user_id == session.get('user_id'):
-        return jsonify({'error': 'You cannot change your own role'}), 400
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE users SET role = %s WHERE id = %s RETURNING id, username, role", (new_role, user_id))
-            updated = cur.fetchone()
-            conn.commit()
+        return jsonify({"error": "Role must be user or admin"}), 400
+    if user_id == 1:
+        return jsonify({"error": "Cannot change main admin role"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET role=%s WHERE user_id=%s RETURNING user_id, username, role", 
+                (new_role, user_id))
+    updated = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
     if not updated:
-        return jsonify({'error': 'User not found'}), 404
-    return jsonify({'message': 'Role updated successfully', 'user': updated}), 200
+        return jsonify({"error": "User not found"}), 404
+    return jsonify({"message": "Role updated", "user": updated}), 200
 
-# ---------- CBT ROUTES ----------
-@app.route('/admin/questions', methods=['POST'])
+# ================= SUBJECT ROUTES =================
+@app.route("/admin/subjects", methods=["POST"])
+@admin_required
+def add_subject():
+    data = request.get_json() or {}
+    name = data.get("name")
+    exam_type = data.get("exam_type")
+    if not name or not exam_type:
+        return jsonify({"error": "name and exam_type required"}), 400
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO subjects (name, exam_type) VALUES (%s,%s) RETURNING *", (name, exam_type))
+        subject = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Subject added", "subject": subject}), 201
+    except IntegrityError:
+        return jsonify({"error": "Subject already exists"}), 400
+
+@app.route("/admin/subjects", methods=["GET"])
+def get_subjects():
+    exam_type = request.args.get("exam_type")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    if exam_type:
+        cur.execute("SELECT * FROM subjects WHERE exam_type=%s ORDER BY subject_id DESC", (exam_type,))
+    else:
+        cur.execute("SELECT * FROM subjects ORDER BY subject_id DESC")
+    subjects = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(subjects), 200
+
+@app.route("/admin/subjects/<int:subject_id>", methods=["DELETE"])
+@admin_required
+def delete_subject(subject_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM subjects WHERE subject_id=%s RETURNING subject_id", (subject_id,))
+    deleted = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    if not deleted:
+        return jsonify({"error": "Subject not found"}), 404
+    return jsonify({"message": "Subject deleted"}), 200
+
+# ================= TOPICS =================
+@app.route("/admin/topics", methods=["POST"])
+@admin_required
+def add_topic():
+    data = request.get_json() or {}
+    subject_id = data.get("subject_id")
+    name = data.get("name")
+    explanation = data.get("explanation")
+    jamb_percentage = data.get("jamb_percentage")
+    if not subject_id or not name:
+        return jsonify({"error": "subject_id and name required"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO topics (subject_id, name, explanation, jamb_percentage)
+        VALUES (%s,%s,%s,%s) RETURNING *;
+    """, (subject_id, name, explanation, jamb_percentage))
+    topic = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify(topic), 201
+
+@app.route("/admin/topics", methods=["GET"])
+def get_topics():
+    subject_id = request.args.get("subject_id")
+    if not subject_id:
+        return jsonify({"error": "subject_id required"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM topics WHERE subject_id=%s ORDER BY topic_id DESC", (subject_id,))
+    topics = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(topics), 200
+
+# ================= QUESTIONS =================
+@app.route("/admin/questions", methods=["POST"])
 @admin_required
 def add_question():
-    data = request.get_json()
-    required = ['question_text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_answer']
-    if not all(data.get(k) for k in required):
-        return jsonify({'error': 'All fields are required'}), 400
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO questions (question_text, option_a, option_b, option_c, option_d, correct_answer)
-                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
-            """, (data['question_text'], data['option_a'], data['option_b'], data['option_c'], 
-                  data['option_d'], data['correct_answer'].upper()))
-            q = cur.fetchone()
-            conn.commit()
-    return jsonify({'message': 'Question added successfully', 'id': q['id']}), 201
+    data = request.get_json() or {}
+    required = ["subject_id", "topic_id", "exam_type", "question", "option_a", "option_b", "option_c", "option_d", "answer"]
+    for field in required:
+        if not data.get(field):
+            return jsonify({"error": f"{field} required"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO questions (
+            subject_id, topic_id, exam_type, question, option_a, option_b, option_c, option_d, option_e, answer, explanation
+        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *;
+    """, (
+        data["subject_id"], data["topic_id"], data["exam_type"], data["question"],
+        data["option_a"], data["option_b"], data["option_c"], data["option_d"],
+        data.get("option_e"), data["answer"], data.get("explanation")
+    ))
+    question = cur.fetchone()
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify(question), 201
 
-@app.route('/questions', methods=['GET'])
-@login_required
+@app.route("/questions", methods=["GET"])
 def get_questions():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, question_text, option_a, option_b, option_c, option_d FROM questions ORDER BY RANDOM() LIMIT 20")
-            questions = cur.fetchall()
+    subject_id = request.args.get("subject_id")
+    topic_id = request.args.get("topic_id")
+    exam_type = request.args.get("exam_type")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    query = "SELECT question_id, question, option_a, option_b, option_c, option_d, option_e FROM questions WHERE 1=1"
+    params = []
+    if subject_id:
+        query += " AND subject_id=%s"; params.append(subject_id)
+    if topic_id:
+        query += " AND topic_id=%s"; params.append(topic_id)
+    if exam_type:
+        query += " AND exam_type=%s"; params.append(exam_type)
+    query += " ORDER BY RANDOM() LIMIT 20"
+    cur.execute(query, params)
+    questions = cur.fetchall()
+    cur.close()
+    conn.close()
     return jsonify({'questions': questions}), 200
 
-@app.route('/submit-exam', methods=['POST'])
-@login_required
+@app.route("/submit-exam", methods=["POST"])
 def submit_exam():
-    data = request.get_json()
-    answers = data.get('answers', {})
-    user_id = session.get('user_id')
-    if not answers:
-        return jsonify({'error': 'No answers submitted'}), 400
-
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            q_ids = list(answers.keys())
-            cur.execute(f"SELECT id, correct_answer FROM questions WHERE id IN ({','.join(['%s']*len(q_ids))})", q_ids)
-            correct_answers = {str(row['id']): row['correct_answer'] for row in cur.fetchall()}
-            score = sum(1 for qid, ans in answers.items() if correct_answers.get(qid) == ans.upper())
-            total = len(correct_answers)
-            cur.execute("INSERT INTO results (user_id, score, total_questions) VALUES (%s, %s, %s) RETURNING id", 
-                        (user_id, score, total))
-            conn.commit()
+    data = request.get_json() or {}
+    user_id = data.get("user_id")
+    answers = data.get("answers", {})
+    if not user_id or not answers:
+        return jsonify({"error": "user_id and answers required"}), 400
+    conn = get_db_connection()
+    cur = conn.cursor()
+    q_ids = list(answers.keys())
+    cur.execute(f"SELECT question_id, answer FROM questions WHERE question_id IN ({','.join(['%s']*len(q_ids))})", q_ids)
+    correct_answers = {str(row['question_id']): row['answer'] for row in cur.fetchall()}
+    score = sum(1 for qid, ans in answers.items() if correct_answers.get(qid) == ans.upper())
+    total = len(correct_answers)
+    cur.execute("INSERT INTO results (user_id, score, total_questions) VALUES (%s, %s, %s) RETURNING result_id", 
+                (user_id, score, total))
+    conn.commit()
+    cur.close()
+    conn.close()
     percentage = round((score / total) * 100, 2) if total > 0 else 0
-    return jsonify({'message': 'Exam submitted', 'score': score, 'total': total, 'percentage': percentage}), 200
+    return jsonify({'score': score, 'total': total, 'percentage': percentage}), 200
 
-@app.route('/admin/results', methods=['GET'])
-@admin_required
-def admin_get_results():
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT r.id, u.username, u.email, r.score, r.total_questions, 
-                       ROUND((r.score::FLOAT / r.total_questions) * 100, 2) as percentage, r.submitted_at
-                FROM results r JOIN users u ON r.user_id = u.id ORDER BY r.submitted_at DESC
-            """)
-            results = cur.fetchall()
-    return jsonify({'results': results}), 200
+# ================= USER AUTH =================
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.get_json() or {}
+    required = ["full_name", "username", "email", "password"]
+    if not all(data.get(x) for x in required):
+        return jsonify({"error": "Missing fields"}), 400
 
-@app.route('/')
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (full_name, username, email, password, role)
+            VALUES (%s,%s,%s,%s,%s) RETURNING user_id
+        """, (
+            data["full_name"], 
+            data["username"], 
+            data["email"], 
+            generate_password_hash(data["password"]),
+            'user'
+        ))
+        user = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Account created successfully", "user_id": user["user_id"]}), 201
+    except IntegrityError as e:
+        err_msg = str(e)
+        if "username" in err_msg:
+            return jsonify({"error": "Username already exists"}), 400
+        elif "email" in err_msg:
+            return jsonify({"error": "Email already exists"}), 400
+        return jsonify({"error": "Username or email already exists"}), 400
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json() or {}
+    login_field = data.get("login")  # can be username or email
+    password = data.get("password")
+
+    if not login_field or not password:
+        return jsonify({"error": "Missing credentials"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    # Allow login with either username or email
+    cur.execute(
+        "SELECT * FROM users WHERE username=%s OR email=%s",
+        (login_field, login_field)
+    )
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not user or not check_password_hash(user["password"], password):
+        return jsonify({"error": "Invalid username/email or password"}), 401
+
+    user.pop("password", None)
+    return jsonify({"message": "Login successful", "user": user}), 200
+
+@app.route("/")
 def home():
-    return jsonify({'message': 'Flask CBT API Running'})
+    return jsonify({"message": "CBT API Running"})
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
