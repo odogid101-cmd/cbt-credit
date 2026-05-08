@@ -13,7 +13,7 @@ ADMIN_PASSWORD_HASH = generate_password_hash("@9064_tech")
 
 # ================= APP =================
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
