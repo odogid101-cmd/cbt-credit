@@ -335,5 +335,16 @@ def webauthn_login_begin():
 def home():
     return jsonify({"message": "CBT API Running"})
 
+@app.route('/test-email')
+def test_email():
+    try:
+        msg = Message('Test', recipients=['your-personal-gmail@gmail.com'])
+        msg.body = 'If you see this, email works'
+        mail.send(msg)
+        return 'Email sent'
+    except Exception as e:
+        return f'Error: {str(e)}'
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
