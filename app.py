@@ -27,8 +27,10 @@ def get_db_connection():
 def admin_required(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
+        # Check JSON body first, then query args
         data = request.get_json(silent=True) or {}
-        password = data.get("admin_password")
+        password = data.get("admin_password") or request.args.get("admin_password")
+        
         if not password or not check_password_hash(ADMIN_PASSWORD_HASH, password):
             return jsonify({"error": "Admin authorization required"}), 403
         return f(*args, **kwargs)
