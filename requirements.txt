@@ -3,4 +3,5 @@ Flask-CORS
 psycopg2-binary
 Werkzeug
 gunicorn
-
+flask-mail
+webauthn
