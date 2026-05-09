@@ -7,3 +7,4 @@ PyJWT
 Werkzeug
 gunicorn
 webauthn
+sendgrid
