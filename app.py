@@ -28,7 +28,7 @@ app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('FROM_EMAIL', 'cbt-support@gmail.com')
+app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('FROM_EMAIL', 'cbtcredit.support@gmail.com')
 mail = Mail(app)
 
 # ================= DB CONNECTION =================
@@ -93,6 +93,65 @@ def init_db():
     conn.close()
 
 init_db()
+
+# ================= USER AUTH =================
+@app.route("/register", methods=["POST"])
+def register():
+    data = request.get_json() or {}
+    required = ["full_name", "username", "email", "password"]
+    if not all(data.get(x) for x in required):
+        return jsonify({"error": "Missing fields"}), 400
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO users (full_name, username, email, password, role)
+            VALUES (%s,%s,%s,%s,%s) RETURNING user_id
+        """, (
+            data["full_name"],
+            data["username"],
+            data["email"],
+            generate_password_hash(data["password"]),
+            'user'
+        ))
+        user = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return jsonify({"message": "Account created successfully", "user_id": user["user_id"]}), 201
+    except IntegrityError as e:
+        err_msg = str(e).lower()
+        if "username" in err_msg:
+            return jsonify({"error": "Username already exists"}), 400
+        elif "email" in err_msg:
+            return jsonify({"error": "Email already exists"}), 400
+        return jsonify({"error": "Username or email already exists"}), 400
+
+@app.route("/login", methods=["POST"])
+def login():
+    data = request.get_json() or {}
+    login_field = data.get("login")
+    password = data.get("password")
+
+    if not login_field or not password:
+        return jsonify({"error": "Missing credentials"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT * FROM users WHERE username=%s OR email=%s",
+        (login_field, login_field)
+    )
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
+
+    if not user or not check_password_hash(user["password"], password):
+        return jsonify({"error": "Invalid username/email or password"}), 401
+
+    user.pop("password", None)
+    return jsonify({"message": "Login successful", "user": user}), 200
 
 # ================= FORGOT PASSWORD - CODE FLOW =================
 @app.route("/forgot-password", methods=["POST"])
