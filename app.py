@@ -154,9 +154,6 @@ def login():
     return jsonify({"message": "Login successful", "user": user}), 200
 
 # ================= FORGOT PASSWORD - CODE FLOW =================
-
-import secrets
-
 @app.route("/forgot-password", methods=["POST"])
 def forgot_password():
     data = request.get_json() or {}
@@ -197,30 +194,30 @@ def forgot_password():
 
     return jsonify({"message": "Code sent to email"}), 200
 
-   @app.route("/verify-reset-code", methods=["POST"])
-   def verify_reset_code():
-       data = request.get_json() or {}
-       email = data.get("email")
-       code = data.get("code")
+@app.route("/verify-reset-code", methods=["POST"])
+def verify_reset_code():
+    data = request.get_json() or {}
+    email = data.get("email")
+    code = data.get("code")
 
-       if not email or not code:
-           return jsonify({"error": "Email and code required"}), 400
+    if not email or not code:
+        return jsonify({"error": "Email and code required"}), 400
 
-       conn = get_db_connection()
-       cur = conn.cursor()
-       cur.execute(
-           "SELECT user_id FROM users WHERE email=%s AND reset_code=%s AND reset_code_expiry > NOW()",
-           (email, code)
-       )
-       user = cur.fetchone()
-       cur.close()
-       conn.close()
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT user_id FROM users WHERE email=%s AND reset_code=%s AND reset_code_expiry > NOW()",
+        (email, code)
+    )
+    user = cur.fetchone()
+    cur.close()
+    conn.close()
 
-       if not user:
-           return jsonify({"error": "Invalid or expired code"}), 400
+    if not user:
+        return jsonify({"error": "Invalid or expired code"}), 400
 
-       return jsonify({"message": "Code verified"}), 200
-       
+    return jsonify({"message": "Code verified"}), 200
+
 @app.route("/reset-password", methods=["POST"])
 def reset_password():
     data = request.get_json() or {}
