@@ -1,4 +1,5 @@
 import os
+import random
 import secrets
 from functools import wraps
 from datetime import datetime, timedelta
@@ -22,10 +23,11 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL not set")
 
-# ================= MAIL CONFIG =================app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 465))
-app.config['MAIL_USE_TLS'] = os.environ.get('MAIL_USE_TLS', 'False').lower() == 'true'
-app.config['MAIL_USE_SSL'] = os.environ.get('MAIL_USE_SSL', 'True').lower() == 'true'
+# ================= MAIL CONFIG =================
+app.config['MAIL_SERVER'] = os.environ.get('MAIL_SERVER', 'smtp.sendgrid.net')
+app.config['MAIL_PORT'] = int(os.environ.get('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_USE_SSL'] = False
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('FROM_EMAIL', 'cbtcredit.support@gmail.com')
@@ -167,11 +169,13 @@ def forgot_password():
     user = cur.fetchone()
 
     if not user:
+        cur.close()
+        conn.close()
         return jsonify({"message": "If email exists, code has been sent"}), 200
 
     # Generate 6-digit code securely
     code = str(secrets.randbelow(900000) + 100000)
-    expiry = datetime.utcnow() + timedelta(minutes=10)
+    expiry = datetime.utcnow() + timedelta(minutes=20)
 
     cur.execute(
         "UPDATE users SET reset_code=%s, reset_code_expiry=%s WHERE email=%s",
@@ -185,11 +189,11 @@ def forgot_password():
         msg = Message(
             subject="Password Reset Code",
             recipients=[email],
-            body=f"Your password reset code is: {code}\n\nThis code expires in 10 minutes."
+            body=f"Your password reset code is: {code}\n\nThis code expires in 20 minutes."
         )
         mail.send(msg)
     except Exception as e:
-        print("Mail error:", e)
+        print("Mail error:", e) # Check Render logs for this
         return jsonify({"error": "Failed to send email"}), 500
 
     return jsonify({"message": "Code sent to email"}), 200
