@@ -313,6 +313,98 @@ def reset_password():
 
     return jsonify({"message": "Password reset successful"}), 200
 
+
+# ================= ADMIN ROUTES =================
+@app.route("/admin/login", methods=["POST"])
+def admin_login():
+    data = request.get_json() or {}
+    username = data.get("username")
+    password = data.get("password")
+
+    if username!= ADMIN_USERNAME:
+        return jsonify({"error": "Invalid admin credentials"}), 401
+    if not check_password_hash(ADMIN_PASSWORD_HASH, password):
+        return jsonify({"error": "Invalid admin credentials"}), 401
+
+    return jsonify({"message": "Login successful"}), 200
+
+@app.route("/admin/users", methods=["GET"])
+@admin_required
+def admin_list_users():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, full_name, username, email, role, created_at FROM users ORDER BY user_id DESC")
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+    return jsonify(users), 200
+
+@app.route("/admin/users/<int:user_id>/password", methods=["PUT"])
+@admin_required
+def admin_reset_user_password(user_id):
+    data = request.get_json() or {}
+    new_password = data.get("password")
+    if not new_password:
+        return jsonify({"error": "Password required"}), 400
+
+    hashed = generate_password_hash(new_password)
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET password=%s WHERE user_id=%s", (hashed, user_id))
+    if cur.rowcount == 0:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "Password updated successfully"}), 200
+
+@app.route("/admin/users/<int:user_id>/email", methods=["PUT"])
+@admin_required
+def admin_reset_user_email(user_id):
+    data = request.get_json() or {}
+    new_email = data.get("email")
+    if not new_email:
+        return jsonify({"error": "Email required"}), 400
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("SELECT user_id FROM users WHERE email=%s AND user_id!=%s", (new_email, user_id))
+    if cur.fetchone():
+        cur.close()
+        conn.close()
+        return jsonify({"error": "Email already in use"}), 400
+
+    cur.execute("UPDATE users SET email=%s WHERE user_id=%s", (new_email, user_id))
+    if cur.rowcount == 0:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found"}), 404
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "Email updated successfully"}), 200
+
+@app.route("/admin/users/<int:user_id>", methods=["DELETE"])
+@admin_required
+def admin_delete_user(user_id):
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM users WHERE user_id=%s AND role='user'", (user_id,))
+    if cur.rowcount == 0:
+        cur.close()
+        conn.close()
+        return jsonify({"error": "User not found or cannot delete admin"}), 404
+
+    conn.commit()
+    cur.close()
+    conn.close()
+    return jsonify({"message": "User deleted successfully"}), 200
+
 # ================= ROOT =================
 @app.route("/")
 def home():
