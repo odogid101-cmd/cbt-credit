@@ -171,7 +171,7 @@ def forgot_password():
         return jsonify({"message": "If email exists, code has been sent"}), 200
 
     # Generate 6-digit code
-    code = str(random.randint(100000, 999))
+    code = str(random.randint(100000, 999999))
     expiry = datetime.utcnow() + timedelta(minutes=10)
 
     cur.execute(
