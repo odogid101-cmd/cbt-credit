@@ -13,7 +13,7 @@ from sendgrid.helpers.mail import Mail
 
 # ================= ADMIN CONFIG =================
 ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD_HASH = generate_password_hash("@9064_tech")
+ADMIN_PASSWORD_HASH = generate_password_hash("admin")
 
 # ================= APP =================
 app = Flask(__name__)
