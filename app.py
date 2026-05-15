@@ -12,7 +12,7 @@ from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
 # ================= ADMIN CONFIG =================
-ADMIN_USERNAME = "admin"
+ADMIN_USERNAME = "admintech"
 ADMIN_PASSWORD_HASH = generate_password_hash("admin")
 
 # ================= APP =================
