@@ -60,6 +60,13 @@ def send_email(to_email, subject, body, html=None):
             print("SendGrid error:", str(e))
         return False
 
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
+    return response
+    
 # ================= ADMIN GUARD =================
 def admin_required(f):
     @wraps(f)
@@ -93,6 +100,22 @@ def init_db():
         );
     """)
     
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS questions (
+        question_id SERIAL PRIMARY KEY,
+        exam TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        question_text TEXT NOT NULL,
+        option_a TEXT DEFAULT '',
+        option_b TEXT DEFAULT '',
+        option_c TEXT DEFAULT '',
+        option_d TEXT DEFAULT '',
+        correct_answer TEXT DEFAULT 'A',
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(question_text, subject, exam)
+    );
+""")
+
     cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS profile_pic TEXT DEFAULT '{DEFAULT_AVATAR}';")
     cur.execute(f"UPDATE users SET profile_pic = '{DEFAULT_AVATAR}' WHERE profile_pic IS NULL;")
     
@@ -322,8 +345,7 @@ def forgot_password():
         return jsonify({"error": "Failed to send email"}), 500
 
     return jsonify({"message": "Code sent"}), 200
-
-# ================= VERIFY CODE =================
+    # ================= VERIFY CODE =================
 @app.route("/verify-reset-code", methods=["POST"])
 def verify_reset_code():
     data = request.get_json() or {}
